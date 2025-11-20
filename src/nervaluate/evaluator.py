@@ -2,7 +2,7 @@ from typing import List, Dict, Any, Union, Optional
 import csv
 import io
 
-from .entities import EvaluationResult, EvaluationIndices
+from .entities import EvaluationResult, EvaluationIndices, Entity
 from .strategies import (
     EvaluationStrategy,
     StrictEvaluation,
@@ -10,24 +10,28 @@ from .strategies import (
     EntityTypeEvaluation,
     ExactEvaluation,
 )
-from .loaders import DataLoader, ConllLoader, ListLoader, DictLoader
-from .entities import Entity
+from .loaders import DataLoader, SpanDictLoader, SimpleSpanLoader
 
 
 class Evaluator:
-    """Main evaluator class for NER evaluation."""
+    """Main evaluator class for NER evaluation with discontinuous entity support."""
 
     def __init__(
-        self, true: Any, pred: Any, tags: List[str], loader: str = "default", min_overlap_percentage: float = 1.0
+        self, 
+        true: Any, 
+        pred: Any, 
+        tags: List[str], 
+        loader: str = "span_dict", 
+        min_overlap_percentage: float = 1.0
     ) -> None:
         """
         Initialize the evaluator.
 
         Args:
-            true: True entities in any supported format
-            pred: Predicted entities in any supported format
+            true: True entities in supported format
+            pred: Predicted entities in supported format
             tags: List of valid entity tags
-            loader: Name of the loader to use
+            loader: Name of the loader to use ('span_dict' or 'simple_span')
             min_overlap_percentage: Minimum overlap percentage for partial matches (1-100)
         """
         self.tags = tags
@@ -38,7 +42,10 @@ class Evaluator:
 
     def _setup_loaders(self) -> None:
         """Setup available data loaders."""
-        self.loaders: Dict[str, DataLoader] = {"conll": ConllLoader(), "list": ListLoader(), "dict": DictLoader()}
+        self.loaders: Dict[str, DataLoader] = {
+            "span_dict": SpanDictLoader(),
+            "simple_span": SimpleSpanLoader(),
+        }
 
     def _setup_evaluation_strategies(self) -> None:
         """Setup evaluation strategies with overlap threshold."""
@@ -51,36 +58,16 @@ class Evaluator:
 
     def _load_data(self, true: Any, pred: Any, loader: str) -> None:
         """Load the true and predicted data."""
-        if loader == "default":
-            # Try to infer the loader based on input type
-            if isinstance(true, str):
-                loader = "conll"
-            elif isinstance(true, list) and true and isinstance(true[0], list):
-                if isinstance(true[0][0], dict):
-                    loader = "dict"
-                else:
-                    loader = "list"
-            else:
-                raise ValueError("Could not infer loader from input type")
-
         if loader not in self.loaders:
-            raise ValueError(f"Unknown loader: {loader}")
-
-        # For list loader, check document lengths before loading
-        if loader == "list":
-            if len(true) != len(pred):
-                raise ValueError("Number of predicted documents does not equal true")
-
-            # Check that each document has the same length
-            for i, (true_doc, pred_doc) in enumerate(zip(true, pred)):
-                if len(true_doc) != len(pred_doc):
-                    raise ValueError(f"Document {i} has different lengths: true={len(true_doc)}, pred={len(pred_doc)}")
+            raise ValueError(f"Unknown loader: {loader}. Available: {list(self.loaders.keys())}")
 
         self.true = self.loaders[loader].load(true)
         self.pred = self.loaders[loader].load(pred)
 
         if len(self.true) != len(self.pred):
-            raise ValueError("Number of predicted documents does not equal true")
+            raise ValueError(
+                f"Number of documents mismatch: true={len(self.true)}, pred={len(self.pred)}"
+            )
 
     def evaluate(self) -> Dict[str, Any]:
         """
@@ -90,12 +77,14 @@ class Evaluator:
             Dictionary containing evaluation results for each strategy and entity type
         """
         results = {}
+        
         # Get unique tags that appear in either true or predicted data
-        used_tags = set()  # type: ignore
+        used_tags = set()
         for doc in self.true:
             used_tags.update(e.label for e in doc)
         for doc in self.pred:
             used_tags.update(e.label for e in doc)
+        
         # Only keep tags that are both used and in the allowed tags list
         used_tags = used_tags.intersection(set(self.tags))
 
@@ -192,7 +181,6 @@ class Evaluator:
         results = self.evaluate()
 
         if mode == "overall":
-            # For overall mode, include all scenarios
             csv_data = [
                 ["Strategy", "Correct", "Incorrect", "Partial", "Missed", "Spurious", "Precision", "Recall", "F1-Score"]
             ]
@@ -251,18 +239,10 @@ class Evaluator:
         Args:
             mode: Either 'overall' for overall metrics or 'entities' for per-entity metrics.
             scenario: The scenario to report on. Only used when mode is 'entities'.
-                      Must be one of:
-                        - 'strict' exact boundary surface string match and entity type;
-                        - 'exact': exact boundary match over the surface string and entity type;
-                        - 'partial': partial boundary match over the surface string, regardless of the type;
-                        - 'ent_type': exact boundary match over the surface string, regardless of the type;
             digits: The number of digits to round the results to.
 
         Returns:
             A string containing the summary report.
-
-        Raises:
-            ValueError: If the scenario or mode is invalid.
         """
         valid_scenarios = {"strict", "ent_type", "partial", "exact"}
         valid_modes = {"overall", "entities"}
@@ -278,9 +258,8 @@ class Evaluator:
 
         results = self.evaluate()
         if mode == "overall":
-            # Process overall results - show all scenarios
             results_data = results["overall"]
-            for eval_schema in sorted(valid_scenarios):  # Sort to ensure consistent order
+            for eval_schema in sorted(valid_scenarios):
                 if eval_schema not in results_data:
                     continue
                 results_schema = results_data[eval_schema]
@@ -298,12 +277,11 @@ class Evaluator:
                     ]
                 )
         else:
-            # Process entity-specific results for the specified scenario only
             results_data = results["entities"]
             target_names = sorted(results_data.keys())
             for ent_type in target_names:
                 if scenario not in results_data[ent_type]:
-                    continue  # Skip if scenario not available for this entity type
+                    continue
 
                 results_ent = results_data[ent_type][scenario]
                 rows.append(
@@ -332,175 +310,5 @@ class Evaluator:
 
         for row in rows[1:]:
             report += row_fmt.format(*row, width=width, digits=digits)
-
-        return report
-
-    def summary_report_indices(  # pylint: disable=too-many-branches
-        self, mode: str = "overall", scenario: str = "strict", colors: bool = False
-    ) -> str:
-        """
-        Generate a summary report of the evaluation indices.
-
-        Args:
-            mode: Either 'overall' for overall metrics or 'entities' for per-entity metrics.
-            scenario: The scenario to report on. Must be one of: 'strict', 'ent_type', 'partial', 'exact'.
-                     Only used when mode is 'entities'. Defaults to 'strict'.
-            colors: Whether to use colors in the output. Defaults to False.
-
-        Returns:
-            A string containing the summary report of indices.
-
-        Raises:
-            ValueError: If the scenario or mode is invalid.
-        """
-        valid_scenarios = {"strict", "ent_type", "partial", "exact"}
-        valid_modes = {"overall", "entities"}
-
-        if mode not in valid_modes:
-            raise ValueError(f"Invalid mode: must be one of {valid_modes}")
-
-        if mode == "entities" and scenario not in valid_scenarios:
-            raise ValueError(f"Invalid scenario: must be one of {valid_scenarios}")
-
-        # ANSI color codes
-        COLORS = {
-            "reset": "\033[0m",
-            "bold": "\033[1m",
-            "red": "\033[91m",
-            "green": "\033[92m",
-            "yellow": "\033[93m",
-            "blue": "\033[94m",
-            "magenta": "\033[95m",
-            "cyan": "\033[96m",
-            "white": "\033[97m",
-        }
-
-        def colorize(text: str, color: str) -> str:
-            """Helper function to colorize text if colors are enabled."""
-            if colors:
-                return f"{COLORS[color]}{text}{COLORS['reset']}"
-            return text
-
-        def get_prediction_info(pred: Union[Entity, str]) -> str:
-            """Helper function to get prediction info based on pred type."""
-            if isinstance(pred, Entity):
-                return f"Label={pred.label}, Start={pred.start}, End={pred.end}"
-            # String (BIO tag)
-            return f"Tag={pred}"
-
-        results = self.evaluate()
-        report = ""
-
-        # Create headers for the table
-        headers = ["Category", "Instance", "Entity", "Details"]
-        header_fmt = "{:<20} {:<10} {:<8} {:<25}"
-        row_fmt = "{:<20} {:<10} {:<8} {:<10}"
-
-        if mode == "overall":
-            # Get the indices from the overall results
-            indices_data = results["overall_indices"][scenario]
-            report += f"\n{colorize('Indices for error schema', 'bold')} '{colorize(scenario, 'cyan')}':\n\n"
-            report += colorize(header_fmt.format(*headers), "bold") + "\n"
-            report += colorize("-" * 78, "white") + "\n"
-
-            for category, indices in indices_data.__dict__.items():
-                if not category.endswith("_indices"):
-                    continue
-                category_name = category.replace("_indices", "").replace("_", " ").capitalize()
-
-                # Color mapping for categories
-                category_colors = {
-                    "Correct": "green",
-                    "Incorrect": "red",
-                    "Partial": "yellow",
-                    "Missed": "magenta",
-                    "Spurious": "blue",
-                }
-
-                if indices:
-                    for instance_index, entity_index in indices:
-                        if self.pred != [[]]:
-                            pred = self.pred[instance_index][entity_index]
-                            prediction_info = get_prediction_info(pred)
-                            report += (
-                                row_fmt.format(
-                                    colorize(category_name, category_colors.get(category_name, "white")),
-                                    f"{instance_index}",
-                                    f"{entity_index}",
-                                    prediction_info,
-                                )
-                                + "\n"
-                            )
-                        else:
-                            report += (
-                                row_fmt.format(
-                                    colorize(category_name, category_colors.get(category_name, "white")),
-                                    f"{instance_index}",
-                                    f"{entity_index}",
-                                    "No prediction info",
-                                )
-                                + "\n"
-                            )
-                else:
-                    report += (
-                        row_fmt.format(
-                            colorize(category_name, category_colors.get(category_name, "white")), "-", "-", "None"
-                        )
-                        + "\n"
-                    )
-        else:
-            # Get the indices from the entity-specific results
-            for entity_type, entity_results in results["entity_indices"].items():
-                report += f"\n{colorize('Entity Type', 'bold')}: {colorize(entity_type, 'cyan')}\n"
-                report += f"{colorize('Error Schema', 'bold')}: '{colorize(scenario, 'cyan')}'\n\n"
-                report += colorize(header_fmt.format(*headers), "bold") + "\n"
-                report += colorize("-" * 78, "white") + "\n"
-
-                error_data = entity_results[scenario]
-                for category, indices in error_data.__dict__.items():
-                    if not category.endswith("_indices"):
-                        continue
-                    category_name = category.replace("_indices", "").replace("_", " ").capitalize()
-
-                    # Color mapping for categories
-                    category_colors = {
-                        "Correct": "green",
-                        "Incorrect": "red",
-                        "Partial": "yellow",
-                        "Missed": "magenta",
-                        "Spurious": "blue",
-                    }
-
-                    if indices:
-                        for instance_index, entity_index in indices:
-                            if self.pred != [[]]:
-                                pred = self.pred[instance_index][entity_index]
-                                prediction_info = get_prediction_info(pred)
-                                report += (
-                                    row_fmt.format(
-                                        colorize(category_name, category_colors.get(category_name, "white")),
-                                        f"{instance_index}",
-                                        f"{entity_index}",
-                                        prediction_info,
-                                    )
-                                    + "\n"
-                                )
-                            else:
-                                report += (
-                                    row_fmt.format(
-                                        colorize(category_name, category_colors.get(category_name, "white")),
-                                        f"{instance_index}",
-                                        f"{entity_index}",
-                                        "No prediction info",
-                                    )
-                                    + "\n"
-                                )
-                    else:
-                        report += (
-                            row_fmt.format(
-                                colorize(category_name, category_colors.get(category_name, "white")), "-", "-", "None"
-                            )
-                            + "\n"
-                        )
 
         return report

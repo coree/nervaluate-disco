@@ -1,844 +1,495 @@
+"""Tests for evaluation strategies."""
+
 import pytest
 from nervaluate.entities import Entity
-from nervaluate.strategies import EntityTypeEvaluation, ExactEvaluation, PartialEvaluation, StrictEvaluation
-
-def create_entities_from_bio(bio_tags):
-    """Helper function to create entities from BIO tags."""
-    entities = []
-    current_entity = None
-
-    for i, tag in enumerate(bio_tags):
-        if tag == "O":
-            continue
-
-        if tag.startswith("B-"):
-            if current_entity:
-                entities.append(current_entity)
-            current_entity = Entity(tag[2:], i, i + 1)
-        elif tag.startswith("I-"):
-            if current_entity:
-                current_entity.end = i + 1
-            else:
-                # Handle case where I- tag appears without B-
-                current_entity = Entity(tag[2:], i, i + 1)
-
-    if current_entity:
-        entities.append(current_entity)
-
-    return entities
-
-@pytest.fixture
-def base_sequence():
-    """Base sequence: 'The John Smith who works at Google Inc'"""
-    return ["O", "B-PER", "I-PER", "O", "O", "O", "B-ORG", "I-ORG"]
+from nervaluate.strategies import (
+    StrictEvaluation,
+    PartialEvaluation,
+    EntityTypeEvaluation,
+    ExactEvaluation
+)
 
 
 class TestStrictEvaluation:
-    """Test cases for strict evaluation strategy."""
+    """Tests for StrictEvaluation strategy."""
 
-    def test_perfect_match(self, base_sequence):
-        """Test case: Perfect match of all entities."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(base_sequence)
+    def test_perfect_match(self):
+        """Test perfect match - same label and spans."""
+        true = [Entity("PER", spans=[(10, 15)])]
+        pred = [Entity("PER", spans=[(10, 15)])]
 
-        evaluator = StrictEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG"])
-
-        assert result.correct == 2
-        assert result.incorrect == 0
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0), (0, 1)]
-        assert result_indices.incorrect_indices == []
-        assert result_indices.partial_indices == []
-        assert result_indices.missed_indices == []
-        assert result_indices.spurious_indices == []
-
-    def test_missed_entity(self, base_sequence):
-        """Test case: One entity is missed in prediction."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(["O", "B-PER", "I-PER", "O", "O", "O", "O", "O"])
-
-        evaluator = StrictEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG"])
+        strategy = StrictEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PER"])
 
         assert result.correct == 1
         assert result.incorrect == 0
-        assert result.partial == 0
+        assert result.missed == 0
+        assert result.spurious == 0
+        assert len(indices.correct_indices) == 1
+
+    def test_wrong_label(self):
+        """Test wrong label - same spans but different label."""
+        true = [Entity("PER", spans=[(10, 15)])]
+        pred = [Entity("ORG", spans=[(10, 15)])]
+
+        strategy = StrictEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PER", "ORG"])
+
+        assert result.correct == 0
+        assert result.incorrect == 1
+        assert result.missed == 0
+        assert result.spurious == 0
+
+    def test_wrong_boundary(self):
+        """Test wrong boundary - same label but different spans."""
+        true = [Entity("PER", spans=[(10, 15)])]
+        pred = [Entity("PER", spans=[(10, 16)])]
+
+        strategy = StrictEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PER"])
+
+        assert result.correct == 0
+        assert result.incorrect == 1
+        assert result.missed == 0
+        assert result.spurious == 0
+
+    def test_missed_entity(self):
+        """Test missed entity - true entity not in predictions."""
+        true = [Entity("PER", spans=[(10, 15)])]
+        pred = []
+
+        strategy = StrictEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PER"])
+
+        assert result.correct == 0
         assert result.missed == 1
         assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0)]
-        assert result_indices.incorrect_indices == []
-        assert result_indices.partial_indices == []
-        assert result_indices.missed_indices == [(0, 1)]
-        assert result_indices.spurious_indices == []
 
-    def test_wrong_label(self, base_sequence):
-        """Test case: Entity with wrong label."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(["O", "B-PER", "I-PER", "O", "O", "O", "B-LOC", "I-LOC"])
+    def test_spurious_entity(self):
+        """Test spurious entity - predicted entity not in true."""
+        true = []
+        pred = [Entity("PER", spans=[(10, 15)])]
 
-        evaluator = StrictEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG", "LOC"])
+        strategy = StrictEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PER"])
 
-        assert result.correct == 1
-        assert result.incorrect == 1
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0)]
-        assert result_indices.incorrect_indices == [(0, 1)]
-        assert result_indices.partial_indices == []
-        assert result_indices.missed_indices == []
-        assert result_indices.spurious_indices == []
-
-    def test_wrong_boundary(self, base_sequence):
-        """Test case: Entity with wrong boundary."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(["O", "B-PER", "I-PER", "O", "O", "O", "B-LOC", "O"])
-
-        evaluator = StrictEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG", "LOC"])
-
-        assert result.correct == 1
-        assert result.incorrect == 1
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0)]
-        assert result_indices.incorrect_indices == [(0, 1)]
-        assert result_indices.partial_indices == []
-        assert result_indices.missed_indices == []
-        assert result_indices.spurious_indices == []
-
-    def test_shifted_boundary(self, base_sequence):
-        """Test case: Entity with shifted boundary."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(["O", "B-PER", "I-PER", "O", "O", "O", "O", "B-LOC"])
-
-        evaluator = StrictEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG", "LOC"])
-
-        assert result.correct == 1
-        assert result.incorrect == 1
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0)]
-        assert result_indices.incorrect_indices == [(0, 1)]
-        assert result_indices.partial_indices == []
-        assert result_indices.missed_indices == []
-        assert result_indices.spurious_indices == []
-
-    def test_extra_entity(self, base_sequence):
-        """Test case: Extra entity in prediction."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(["O", "B-PER", "I-PER", "O", "B-PER", "O", "B-LOC", "I-LOC"])
-
-        evaluator = StrictEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG", "LOC"])
-
-        assert result.correct == 1
-        assert result.incorrect == 1
-        assert result.partial == 0
+        assert result.correct == 0
         assert result.missed == 0
         assert result.spurious == 1
-        assert result_indices.correct_indices == [(0, 0)]
-        assert result_indices.incorrect_indices == [(0, 2)]
-        assert result_indices.partial_indices == []
-        assert result_indices.missed_indices == []
-        assert result_indices.spurious_indices == [(0, 1)]
 
+    def test_discontinuous_perfect_match(self):
+        """Test perfect match for discontinuous entity."""
+        true = [Entity("PROTEIN", spans=[(10, 15), (30, 35)])]
+        pred = [Entity("PROTEIN", spans=[(10, 15), (30, 35)])]
 
-class TestEntityTypeEvaluation:
-    """Test cases for entity type evaluation strategy."""
+        strategy = StrictEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PROTEIN"])
 
-    def test_perfect_match(self, base_sequence):
-        """Test case: Perfect match of all entities."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(base_sequence)
+        assert result.correct == 1
+        assert result.incorrect == 0
 
-        evaluator = EntityTypeEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG"])
+    def test_discontinuous_wrong_spans(self):
+        """Test discontinuous entity with wrong spans."""
+        true = [Entity("PROTEIN", spans=[(10, 15), (30, 35)])]
+        pred = [Entity("PROTEIN", spans=[(10, 15), (30, 36)])]  # Second span differs
+
+        strategy = StrictEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PROTEIN"])
+
+        assert result.correct == 0
+        assert result.incorrect == 1
+
+    def test_overlapping_entities(self):
+        """Test evaluation with overlapping entities."""
+        true = [
+            Entity("PROTEIN", spans=[(10, 20)]),
+            Entity("GENE", spans=[(15, 25)])  # Overlaps with PROTEIN
+        ]
+        pred = [
+            Entity("PROTEIN", spans=[(10, 20)]),
+            Entity("GENE", spans=[(15, 25)])
+        ]
+
+        strategy = StrictEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PROTEIN", "GENE"])
 
         assert result.correct == 2
         assert result.incorrect == 0
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0), (0, 1)]
-        assert result_indices.incorrect_indices == []
-        assert result_indices.partial_indices == []
-        assert result_indices.missed_indices == []
-        assert result_indices.spurious_indices == []
 
-    def test_missed_entity(self, base_sequence):
-        """Test case: One entity is missed in prediction."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(["O", "B-PER", "I-PER", "O", "O", "O", "O", "O"])
+    def test_threshold_below_minimum(self):
+        """Test that entities below threshold are not matched."""
+        true = [Entity("PER", spans=[(10, 20)])]  # 10 chars
+        pred = [Entity("PER", spans=[(10, 12)])]  # 2 chars = 20% overlap
 
-        evaluator = EntityTypeEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG"])
+        strategy = StrictEvaluation(min_overlap_percentage=50.0)
+        result, indices = strategy.evaluate(true, pred, ["PER"])
 
-        assert result.correct == 1
+        assert result.correct == 0
         assert result.incorrect == 0
-        assert result.partial == 0
         assert result.missed == 1
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0)]
-        assert result_indices.incorrect_indices == []
-        assert result_indices.partial_indices == []
-        assert result_indices.missed_indices == [(0, 1)]
-        assert result_indices.spurious_indices == []
-
-    def test_wrong_label(self, base_sequence):
-        """Test case: Entity with wrong label."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(["O", "B-PER", "I-PER", "O", "O", "O", "B-LOC", "I-LOC"])
-
-        evaluator = EntityTypeEvaluation()
-        result, _ = evaluator.evaluate(true, pred, ["PER", "ORG", "LOC"])
-
-        assert result.correct == 1
-        assert result.incorrect == 1
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 0
-
-    def test_wrong_boundary(self, base_sequence):
-        """Test case: Entity with wrong boundary."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(["O", "B-PER", "I-PER", "O", "O", "O", "B-LOC", "O"])
-
-        evaluator = EntityTypeEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG", "LOC"])
-
-        assert result.correct == 1
-        assert result.incorrect == 1
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0)]
-        assert result_indices.incorrect_indices == [(0, 1)]
-        assert result_indices.partial_indices == []
-        assert result_indices.missed_indices == []
-        assert result_indices.spurious_indices == []
-
-    def test_shifted_boundary(self, base_sequence):
-        """Test case: Entity with shifted boundary."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(["O", "B-PER", "I-PER", "O", "O", "O", "O", "B-LOC"])
-
-        evaluator = EntityTypeEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG", "LOC"])
-
-        assert result.correct == 1
-        assert result.incorrect == 1
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0)]
-        assert result_indices.incorrect_indices == [(0, 1)]
-        assert result_indices.partial_indices == []
-        assert result_indices.missed_indices == []
-        assert result_indices.spurious_indices == []
-
-    def test_extra_entity(self, base_sequence):
-        """Test case: Extra entity in prediction."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(["O", "B-PER", "I-PER", "O", "B-PER", "O", "B-LOC", "I-LOC"])
-
-        evaluator = EntityTypeEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG", "LOC"])
-
-        assert result.correct == 1
-        assert result.incorrect == 1
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 1
-        assert result_indices.correct_indices == [(0, 0)]
-        assert result_indices.incorrect_indices == [(0, 2)]
-        assert result_indices.spurious_indices == [(0, 1)]
-        assert result_indices.missed_indices == []
-        assert result_indices.partial_indices == []
-
-
-class TestExactEvaluation:
-    """Test cases for exact evaluation strategy."""
-
-    def test_perfect_match(self, base_sequence):
-        """Test case: Perfect match of all entities."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(base_sequence)
-
-        evaluator = ExactEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG"])
-
-        assert result.correct == 2
-        assert result.incorrect == 0
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0), (0, 1)]
-        assert result_indices.incorrect_indices == []
-        assert result_indices.partial_indices == []
-        assert result_indices.missed_indices == []
-        assert result_indices.spurious_indices == []
-
-    def test_missed_entity(self, base_sequence):
-        """Test case: One entity is missed in prediction."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(["O", "B-PER", "I-PER", "O", "O", "O", "O", "O"])
-
-        evaluator = ExactEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG"])
-
-        assert result.correct == 1
-        assert result.incorrect == 0
-        assert result.partial == 0
-        assert result.missed == 1
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0)]
-        assert result_indices.incorrect_indices == []
-        assert result_indices.partial_indices == []
-        assert result_indices.missed_indices == [(0, 1)]
-        assert result_indices.spurious_indices == []
-
-    def test_wrong_label(self, base_sequence):
-        """Test case: Entity with wrong label."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(["O", "B-PER", "I-PER", "O", "O", "O", "B-LOC", "I-LOC"])
-
-        evaluator = ExactEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG", "LOC"])
-
-        assert result.correct == 2
-        assert result.incorrect == 0
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0), (0, 1)]
-        assert result_indices.incorrect_indices == []
-        assert result_indices.partial_indices == []
-        assert result_indices.missed_indices == []
-        assert result_indices.spurious_indices == []
-
-    def test_wrong_boundary(self, base_sequence):
-        """Test case: Entity with wrong boundary."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(["O", "B-PER", "I-PER", "O", "O", "O", "B-LOC", "O"])
-
-        evaluator = ExactEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG", "LOC"])
-
-        assert result.correct == 1
-        assert result.incorrect == 1
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0)]
-        assert result_indices.incorrect_indices == [(0, 1)]
-        assert result_indices.partial_indices == []
-        assert result_indices.missed_indices == []
-        assert result_indices.spurious_indices == []
-
-    def test_shifted_boundary(self, base_sequence):
-        """Test case: Entity with shifted boundary."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(["O", "B-PER", "I-PER", "O", "O", "O", "O", "B-LOC"])
-
-        evaluator = ExactEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG", "LOC"])
-
-        assert result.correct == 1
-        assert result.incorrect == 1
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0)]
-        assert result_indices.incorrect_indices == [(0, 1)]
-        assert result_indices.partial_indices == []
-        assert result_indices.missed_indices == []
-        assert result_indices.spurious_indices == []
-
-    def test_extra_entity(self, base_sequence):
-        """Test case: Extra entity in prediction."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(["O", "B-PER", "I-PER", "O", "B-PER", "O", "B-LOC", "I-LOC"])
-
-        evaluator = ExactEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG", "LOC"])
-
-        assert result.correct == 2
-        assert result.incorrect == 0
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 1
-        assert result_indices.correct_indices == [(0, 0), (0, 2)]
-        assert result_indices.incorrect_indices == []
-        assert result_indices.partial_indices == []
-        assert result_indices.missed_indices == []
-        assert result_indices.spurious_indices == [(0, 1)]
+        assert result.spurious == 1  # Below threshold = spurious
 
 
 class TestPartialEvaluation:
-    """Test cases for partial evaluation strategy."""
+    """Tests for PartialEvaluation strategy."""
 
-    def test_perfect_match(self, base_sequence):
-        """Test case: Perfect match of all entities."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(base_sequence)
+    def test_exact_match(self):
+        """Test exact span match (label ignored)."""
+        true = [Entity("PER", spans=[(10, 15)])]
+        pred = [Entity("ORG", spans=[(10, 15)])]  # Different label but same spans
 
-        evaluator = PartialEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG"])
-
-        assert result.correct == 2
-        assert result.incorrect == 0
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0), (0, 1)]
-        assert result_indices.incorrect_indices == []
-        assert result_indices.partial_indices == []
-        assert result_indices.missed_indices == []
-        assert result_indices.spurious_indices == []
-
-    def test_missed_entity(self, base_sequence):
-        """Test case: One entity is missed in prediction."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(["O", "B-PER", "I-PER", "O", "O", "O", "O", "O"])
-
-        evaluator = PartialEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG"])
+        strategy = PartialEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PER", "ORG"])
 
         assert result.correct == 1
-        assert result.incorrect == 0
         assert result.partial == 0
-        assert result.missed == 1
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0)]
-        assert result_indices.incorrect_indices == []
-        assert result_indices.partial_indices == []
-        assert result_indices.missed_indices == [(0, 1)]
-        assert result_indices.spurious_indices == []
+        assert result.incorrect == 0  # No incorrect in partial evaluation
 
-    def test_wrong_label(self, base_sequence):
-        """Test case: Entity with wrong label."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(["O", "B-PER", "I-PER", "O", "O", "O", "B-LOC", "I-LOC"])
+    def test_partial_overlap(self):
+        """Test partial boundary overlap."""
+        true = [Entity("PER", spans=[(10, 20)])]
+        pred = [Entity("PER", spans=[(10, 15)])]  # Partial overlap
 
-        evaluator = PartialEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG", "LOC"])
+        strategy = PartialEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PER"])
 
-        assert result.correct == 2
+        assert result.correct == 0
+        assert result.partial == 1
         assert result.incorrect == 0
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0), (0, 1)]
-        assert result_indices.incorrect_indices == []
-        assert result_indices.partial_indices == []
-        assert result_indices.missed_indices == []
-        assert result_indices.spurious_indices == []
 
-    def test_wrong_boundary(self, base_sequence):
-        """Test case: Entity with wrong boundary."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(["O", "B-PER", "I-PER", "O", "O", "O", "B-LOC", "O"])
+    def test_no_incorrect_category(self):
+        """Test that partial evaluation never has incorrect."""
+        true = [Entity("PER", spans=[(10, 15)])]
+        pred = [Entity("PER", spans=[(10, 16)])]
 
-        evaluator = PartialEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG", "LOC"])
+        strategy = PartialEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PER"])
 
-        assert result.correct == 1
         assert result.incorrect == 0
         assert result.partial == 1
-        assert result.missed == 0
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0)]
-        assert result_indices.incorrect_indices == []
-        assert result_indices.partial_indices == [(0, 1)]
-        assert result_indices.missed_indices == []
-        assert result_indices.spurious_indices == []
 
-    def test_shifted_boundary(self, base_sequence):
-        """Test case: Entity with shifted boundary."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(["O", "B-PER", "I-PER", "O", "O", "O", "O", "B-LOC"])
+    def test_discontinuous_partial(self):
+        """Test partial match for discontinuous entities."""
+        true = [Entity("PROTEIN", spans=[(10, 15), (30, 35)])]  # 10 chars
+        pred = [Entity("PROTEIN", spans=[(10, 14), (30, 35)])]  # 9 chars overlap
 
-        evaluator = PartialEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG", "LOC"])
+        strategy = PartialEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PROTEIN"])
+
+        assert result.correct == 0
+        assert result.partial == 1
+
+    def test_partial_uses_half_credit(self):
+        """Test that partial matches get 0.5 credit in metrics."""
+        true = [Entity("PER", spans=[(10, 20)])]
+        pred = [Entity("PER", spans=[(10, 15)])]
+
+        strategy = PartialEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PER"])
+
+        # Precision = (0 + 0.5*1) / 1 = 0.5
+        # Recall = (0 + 0.5*1) / 1 = 0.5
+        assert result.precision == 0.5
+        assert result.recall == 0.5
+
+
+class TestEntityTypeEvaluation:
+    """Tests for EntityTypeEvaluation strategy."""
+
+    def test_correct_type_with_overlap(self):
+        """Test correct when same label with sufficient overlap."""
+        true = [Entity("PER", spans=[(10, 20)])]
+        pred = [Entity("PER", spans=[(10, 15)])]  # Partial overlap but same label
+
+        strategy = EntityTypeEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PER"])
 
         assert result.correct == 1
         assert result.incorrect == 0
-        assert result.partial == 1
-        assert result.missed == 0
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0)]
-        assert result_indices.incorrect_indices == []
-        assert result_indices.partial_indices == [(0, 1)]
-        assert result_indices.missed_indices == []
-        assert result_indices.spurious_indices == []
 
-    def test_extra_entity(self, base_sequence):
-        """Test case: Extra entity in prediction."""
-        true = create_entities_from_bio(base_sequence)
-        pred = create_entities_from_bio(["O", "B-PER", "I-PER", "O", "B-PER", "O", "B-LOC", "I-LOC"])
+    def test_wrong_type_with_overlap(self):
+        """Test incorrect when different label with overlap."""
+        true = [Entity("PER", spans=[(10, 20)])]
+        pred = [Entity("ORG", spans=[(10, 15)])]  # Overlap but wrong label
 
-        evaluator = PartialEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG", "LOC"])
+        strategy = EntityTypeEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PER", "ORG"])
 
-        assert result.correct == 2
-        assert result.incorrect == 0
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 1
-        assert result_indices.correct_indices == [(0, 0), (0, 2)]
-        assert result_indices.incorrect_indices == []
-        assert result_indices.partial_indices == []
-        assert result_indices.missed_indices == []
-        assert result_indices.spurious_indices == [(0, 1)]
-
-
-class TestSingleCharacterEntities:
-    """Test cases for single-character entities to ensure proper range handling."""
-
-    def test_single_token_entities_strict(self):
-        """Test case: Single token entities using strict evaluation."""
-        # Create entities representing single characters/tokens
-        # Entity at position 1 with start=1, end=2 (standard representation)
-        true = [Entity("PER", 1, 2), Entity("ORG", 4, 5)]
-        pred = [Entity("PER", 1, 2), Entity("ORG", 4, 5)]
-
-        evaluator = StrictEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG"])
-
-        assert result.correct == 2
-        assert result.incorrect == 0
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0), (0, 1)]
-
-    def test_single_token_entities_same_start_end(self):
-        """Test case: Single token entities where start==end (edge case)."""
-        # Edge case: entities where start and end are the same
-        # This tests the scenario mentioned in the user's question
-        true = [Entity("PER", 1, 1), Entity("ORG", 4, 4)]
-        pred = [Entity("PER", 1, 1), Entity("ORG", 4, 4)]
-
-        evaluator = StrictEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG"])
-
-        assert result.correct == 2
-        assert result.incorrect == 0
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0), (0, 1)]
-
-    def test_single_token_entities_partial_evaluation(self):
-        """Test case: Single token entities with partial evaluation."""
-        true = [Entity("PER", 1, 1), Entity("ORG", 4, 4)]
-        pred = [Entity("PER", 1, 1), Entity("ORG", 4, 4)]
-
-        evaluator = PartialEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG"])
-
-        assert result.correct == 2
-        assert result.incorrect == 0
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0), (0, 1)]
-
-    def test_single_token_entities_overlap_detection(self):
-        """Test case: Single token entities with overlapping positions."""
-        # Test overlap detection for single character entities
-        true = [Entity("PER", 1, 1)]  # Single token at position 1
-        pred = [Entity("ORG", 1, 1)]  # Different label, same position
-
-        evaluator = StrictEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG"])
-
-        # Should be marked as incorrect due to label mismatch but position overlap
         assert result.correct == 0
         assert result.incorrect == 1
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 0
-        assert result_indices.incorrect_indices == [(0, 0)]
 
-    def test_single_token_adjacent_entities(self):
-        """Test case: Adjacent single token entities."""
-        # Test entities at adjacent positions
-        true = [Entity("PER", 1, 1), Entity("ORG", 2, 2)]
-        pred = [Entity("PER", 1, 1), Entity("ORG", 2, 2)]
+    def test_exact_boundary_wrong_type(self):
+        """Test incorrect even with exact boundary if wrong type."""
+        true = [Entity("PER", spans=[(10, 15)])]
+        pred = [Entity("ORG", spans=[(10, 15)])]  # Exact boundary but wrong label
 
-        evaluator = StrictEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG"])
+        strategy = EntityTypeEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PER", "ORG"])
 
-        assert result.correct == 2
-        assert result.incorrect == 0
-        assert result.partial == 0
-        assert result.missed == 0
-        assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0), (0, 1)]
+        assert result.correct == 0
+        assert result.incorrect == 1
 
-    def test_single_token_missed_entity(self):
-        """Test case: Single token entity that is missed."""
-        true = [Entity("PER", 1, 1), Entity("ORG", 4, 4)]
-        pred = [Entity("PER", 1, 1)]  # Missing the ORG entity
+    def test_discontinuous_correct_type(self):
+        """Test correct type for discontinuous with overlap."""
+        true = [Entity("PROTEIN", spans=[(10, 15), (30, 35)])]
+        pred = [Entity("PROTEIN", spans=[(10, 14), (30, 35)])]
 
-        evaluator = StrictEvaluation()
-        result, result_indices = evaluator.evaluate(true, pred, ["PER", "ORG"])
+        strategy = EntityTypeEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PROTEIN"])
 
         assert result.correct == 1
         assert result.incorrect == 0
-        assert result.partial == 0
+
+
+class TestExactEvaluation:
+    """Tests for ExactEvaluation strategy."""
+
+    def test_exact_boundary_different_label(self):
+        """Test correct when exact boundary even with different label."""
+        true = [Entity("PER", spans=[(10, 15)])]
+        pred = [Entity("ORG", spans=[(10, 15)])]
+
+        strategy = ExactEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PER", "ORG"])
+
+        assert result.correct == 1
+        assert result.incorrect == 0
+
+    def test_wrong_boundary_same_label(self):
+        """Test incorrect when wrong boundary even with same label."""
+        true = [Entity("PER", spans=[(10, 15)])]
+        pred = [Entity("PER", spans=[(10, 16)])]
+
+        strategy = ExactEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PER"])
+
+        assert result.correct == 0
+        assert result.incorrect == 1
+
+    def test_partial_overlap_incorrect(self):
+        """Test that partial overlap is incorrect."""
+        true = [Entity("PER", spans=[(10, 20)])]
+        pred = [Entity("PER", spans=[(10, 15)])]
+
+        strategy = ExactEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PER"])
+
+        assert result.correct == 0
+        assert result.incorrect == 1
+
+    def test_discontinuous_exact_match(self):
+        """Test exact match for discontinuous entities."""
+        true = [Entity("PROTEIN", spans=[(10, 15), (30, 35)])]
+        pred = [Entity("GENE", spans=[(10, 15), (30, 35)])]  # Different label but exact spans
+
+        strategy = ExactEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PROTEIN", "GENE"])
+
+        assert result.correct == 1
+        assert result.incorrect == 0
+
+
+class TestComplexScenarios:
+    """Tests for complex evaluation scenarios."""
+
+    def test_multiple_overlapping_entities(self):
+        """Test complex scenario with multiple overlapping entities."""
+        true = [
+            Entity("PROTEIN", spans=[(10, 20)]),
+            Entity("GENE", spans=[(15, 25)]),
+            Entity("CELL", spans=[(30, 40)])
+        ]
+        pred = [
+            Entity("PROTEIN", spans=[(10, 18)]),
+            Entity("GENE", spans=[(16, 25)]),
+            Entity("CELL", spans=[(30, 40)])
+        ]
+
+        strategy = StrictEvaluation(min_overlap_percentage=50.0)
+        result, indices = strategy.evaluate(true, pred, ["PROTEIN", "GENE", "CELL"])
+
+        # PROTEIN: 8/10 = 80% overlap, but not exact -> incorrect
+        # GENE: 9/10 = 90% overlap, but not exact -> incorrect
+        # CELL: exact match -> correct
+        assert result.correct == 1
+        assert result.incorrect == 2
+        assert result.missed == 0
+        assert result.spurious == 0
+
+    def test_discontinuous_vs_continuous(self):
+        """Test matching discontinuous true against continuous pred."""
+        true = [Entity("PROTEIN", spans=[(10, 15), (30, 35)])]  # 10 chars
+        pred = [Entity("PROTEIN", spans=[(10, 35)])]  # Continuous, covers both
+
+        strategy = PartialEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PROTEIN"])
+
+        # Pred covers all true chars but spans are different
+        assert result.correct == 0
+        assert result.partial == 1
+
+    def test_many_to_one_matching(self):
+        """Test that multiple predictions don't match same true entity."""
+        true = [Entity("PER", spans=[(10, 20)])]
+        pred = [
+            Entity("PER", spans=[(10, 15)]),
+            Entity("PER", spans=[(15, 20)])
+        ]
+
+        strategy = StrictEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PER"])
+
+        # Only one can match, other is spurious
+        assert result.correct == 0
+        assert result.incorrect == 1  # Best match
+        assert result.spurious == 1  # Other prediction
+        assert result.missed == 0
+
+    def test_nested_entities(self):
+        """Test nested/contained entities."""
+        true = [
+            Entity("PROTEIN", spans=[(10, 30)]),
+            Entity("DOMAIN", spans=[(15, 25)])  # Nested inside PROTEIN
+        ]
+        pred = [
+            Entity("PROTEIN", spans=[(10, 30)]),
+            Entity("DOMAIN", spans=[(15, 25)])
+        ]
+
+        strategy = StrictEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PROTEIN", "DOMAIN"])
+
+        assert result.correct == 2
+
+    def test_threshold_filtering(self):
+        """Test that threshold properly filters matches."""
+        true = [
+            Entity("PER", spans=[(0, 100)]),  # 100 chars
+            Entity("ORG", spans=[(200, 300)])  # 100 chars
+        ]
+        pred = [
+            Entity("PER", spans=[(0, 30)]),  # 30% overlap
+            Entity("ORG", spans=[(200, 280)])  # 80% overlap
+        ]
+
+        strategy = PartialEvaluation(min_overlap_percentage=50.0)
+        result, indices = strategy.evaluate(true, pred, ["PER", "ORG"])
+
+        # PER: 30% < 50% -> not matched -> missed and spurious
+        # ORG: 80% > 50% -> matched -> partial
+        assert result.partial == 1
+        assert result.missed == 1
+        assert result.spurious == 1
+
+    def test_empty_predictions(self):
+        """Test with no predictions."""
+        true = [Entity("PER", spans=[(10, 15)])]
+        pred = []
+
+        strategy = StrictEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PER"])
+
+        assert result.correct == 0
         assert result.missed == 1
         assert result.spurious == 0
-        assert result_indices.correct_indices == [(0, 0)]
-        assert result_indices.missed_indices == [(0, 1)]
 
+    def test_empty_true(self):
+        """Test with no true entities."""
+        true = []
+        pred = [Entity("PER", spans=[(10, 15)])]
+
+        strategy = StrictEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PER"])
+
+        assert result.correct == 0
+        assert result.missed == 0
+        assert result.spurious == 1
+
+    def test_both_empty(self):
+        """Test with both empty."""
+        true = []
+        pred = []
+
+        strategy = StrictEvaluation()
+        result, indices = strategy.evaluate(true, pred, ["PER"])
+
+        assert result.correct == 0
+        assert result.missed == 0
+        assert result.spurious == 0
+        assert result.precision == 0
+        assert result.recall == 0
+
+
+class TestInvalidInputs:
+    """Tests for invalid inputs and edge cases."""
+
+    def test_invalid_threshold_too_low(self):
+        """Test that threshold below 1.0 raises error."""
+        with pytest.raises(ValueError, match="must be between 1.0 and 100.0"):
+            StrictEvaluation(min_overlap_percentage=0.5)
+
+    def test_invalid_threshold_too_high(self):
+        """Test that threshold above 100.0 raises error."""
+        with pytest.raises(ValueError, match="must be between 1.0 and 100.0"):
+            StrictEvaluation(min_overlap_percentage=101.0)
+
+    def test_valid_threshold_boundaries(self):
+        """Test that boundary values are accepted."""
+        StrictEvaluation(min_overlap_percentage=1.0)
+        StrictEvaluation(min_overlap_percentage=100.0)
+        assert True  # If we get here, no exceptions were raised
+
+
+
+if __name__ == "__main__":
+    
+    def test_all():
+        # Init class to trigger all tests
+        test_strict = TestStrictEvaluation()
+        test_strict.test_perfect_match()
+        test_strict.test_wrong_label()
+        test_strict.test_wrong_boundary()
+        test_strict.test_missed_entity()
+        test_strict.test_spurious_entity()
+        test_strict.test_discontinuous_perfect_match()
+        test_strict.test_discontinuous_wrong_spans()
+        test_strict.test_overlapping_entities()
+        test_strict.test_threshold_below_minimum()
+        test_partial = TestPartialEvaluation()
+        test_partial.test_exact_match()
+        test_partial.test_partial_overlap()
+        test_partial.test_no_incorrect_category()
+        test_partial.test_discontinuous_partial()
+        test_partial.test_partial_uses_half_credit()
+        test_entity_type = TestEntityTypeEvaluation()
+        test_entity_type.test_correct_type_with_overlap()
+        test_entity_type.test_wrong_type_with_overlap()
+        test_entity_type.test_exact_boundary_wrong_type()
+        test_entity_type.test_discontinuous_correct_type()
+        test_exact = TestExactEvaluation()
+        test_exact.test_exact_boundary_different_label()
+        test_exact.test_wrong_boundary_same_label()
+        test_exact.test_partial_overlap_incorrect()
+        test_exact.test_discontinuous_exact_match()
+        test_complex = TestComplexScenarios()
+        test_complex.test_multiple_overlapping_entities()
+        test_complex.test_discontinuous_vs_continuous()
+        test_complex.test_many_to_one_matching()
+        test_complex.test_nested_entities()
+        test_complex.test_threshold_filtering()
+        test_complex.test_empty_predictions()
+        test_complex.test_empty_true()
+        test_complex.test_both_empty()
+        test_invalid = TestInvalidInputs()
+        test_invalid.test_invalid_threshold_too_low()
+        test_invalid.test_invalid_threshold_too_high()  
+        test_invalid.test_valid_threshold_boundaries()
+    
+    
+    # test_all()  
+    # print("All tests in test_strategies.py passed.")
+
+    import pytest
+    raise SystemExit(pytest.main(["-vv", __file__]))
+        
 
-def test_minimum_overlap_percentage_validation():
-    """Test that minimum overlap percentage validation works correctly."""
-
-    # Valid values should work
-    PartialEvaluation(min_overlap_percentage=1.0)
-    PartialEvaluation(min_overlap_percentage=50.0)
-    PartialEvaluation(min_overlap_percentage=100.0)
-
-    # Invalid values should raise ValueError
-    with pytest.raises(ValueError, match="min_overlap_percentage must be between 1.0 and 100.0"):
-        PartialEvaluation(min_overlap_percentage=0.5)
-
-    with pytest.raises(ValueError, match="min_overlap_percentage must be between 1.0 and 100.0"):
-        PartialEvaluation(min_overlap_percentage=101.0)
-
-    with pytest.raises(ValueError, match="min_overlap_percentage must be between 1.0 and 100.0"):
-        PartialEvaluation(min_overlap_percentage=-5.0)
-
-
-def test_overlap_percentage_calculation():
-    """Test the overlap percentage calculation method."""
-    strategy = PartialEvaluation(min_overlap_percentage=50.0)
-
-    true_entity = Entity(label="PER", start=0, end=9)  # 10 tokens (0-9 inclusive)
-
-    test_cases = [
-        # (pred_entity, expected_percentage)
-        (Entity(label="PER", start=0, end=9), 100.0),  # Complete overlap
-        (Entity(label="PER", start=0, end=4), 50.0),  # Half overlap from start
-        (Entity(label="PER", start=5, end=9), 50.0),  # Half overlap from end
-        (Entity(label="PER", start=0, end=0), 10.0),  # Single token overlap at start
-        (Entity(label="PER", start=9, end=9), 10.0),  # Single token overlap at end
-        (Entity(label="PER", start=10, end=15), 0.0),  # No overlap (adjacent)
-        (Entity(label="PER", start=-5, end=2), 30.0),  # Partial overlap from left (3 tokens: 0,1,2)
-        (Entity(label="PER", start=7, end=12), 30.0),  # Partial overlap from right (3 tokens: 7,8,9)
-        (Entity(label="PER", start=2, end=7), 60.0),  # Middle overlap (6 tokens: 2,3,4,5,6,7)
-    ]
-
-    for pred_entity, expected_percentage in test_cases:
-        calculated = strategy._calculate_overlap_percentage(pred_entity, true_entity)
-        assert (
-            abs(calculated - expected_percentage) < 0.1
-        ), f"Expected {expected_percentage}%, got {calculated}% for pred={pred_entity} vs true={true_entity}"
-
-
-def test_has_sufficient_overlap():
-    """Test the has_sufficient_overlap method with different thresholds."""
-
-    true_entity = Entity(label="PER", start=0, end=9)  # 10 tokens
-
-    # Test with 50% threshold
-    strategy_50 = PartialEvaluation(min_overlap_percentage=50.0)
-
-    # Should pass: 50% or more overlap
-    assert strategy_50._has_sufficient_overlap(Entity(label="PER", start=0, end=4), true_entity)  # 50%
-    assert strategy_50._has_sufficient_overlap(Entity(label="PER", start=0, end=6), true_entity)  # 70%
-    assert strategy_50._has_sufficient_overlap(Entity(label="PER", start=0, end=9), true_entity)  # 100%
-
-    # Should fail: less than 50% overlap
-    assert not strategy_50._has_sufficient_overlap(Entity(label="PER", start=0, end=2), true_entity)  # 30%
-    assert not strategy_50._has_sufficient_overlap(Entity(label="PER", start=0, end=0), true_entity)  # 10%
-    assert not strategy_50._has_sufficient_overlap(Entity(label="PER", start=10, end=15), true_entity)  # 0%
-
-    # Test with 75% threshold
-    strategy_75 = PartialEvaluation(min_overlap_percentage=75.0)
-
-    # Should pass: 75% or more overlap
-    assert strategy_75._has_sufficient_overlap(Entity(label="PER", start=0, end=7), true_entity)  # 80%
-    assert strategy_75._has_sufficient_overlap(Entity(label="PER", start=0, end=9), true_entity)  # 100%
-
-    # Should fail: less than 75% overlap
-    assert not strategy_75._has_sufficient_overlap(Entity(label="PER", start=0, end=6), true_entity)  # 70%
-    assert not strategy_75._has_sufficient_overlap(Entity(label="PER", start=0, end=4), true_entity)  # 50%
-
-
-def test_partial_evaluation_with_min_overlap():
-    """Test PartialEvaluation strategy with different minimum overlap thresholds."""
-
-    true_entities = [Entity(label="PER", start=0, end=9)]  # 10 tokens
-
-    test_cases = [
-        # (pred_entity, min_overlap_threshold, expected_correct, expected_partial, expected_spurious)
-        (Entity(label="PER", start=0, end=4), 50.0, 0, 1, 0),  # 50% overlap -> partial
-        (Entity(label="PER", start=0, end=2), 50.0, 0, 0, 1),  # 30% overlap < 50% -> spurious
-        (Entity(label="PER", start=0, end=9), 50.0, 1, 0, 0),  # 100% overlap exact match -> correct
-        (Entity(label="PER", start=0, end=6), 75.0, 0, 0, 1),  # 70% overlap < 75% -> spurious
-        (Entity(label="PER", start=0, end=7), 75.0, 0, 1, 0),  # 80% overlap > 75% -> partial
-    ]
-
-    for pred_entity, threshold, expected_correct, expected_partial, expected_spurious in test_cases:
-        pred_entities = [pred_entity]
-        strategy = PartialEvaluation(min_overlap_percentage=threshold)
-        result, _ = strategy.evaluate(true_entities, pred_entities, ["PER"], 0)
-
-        assert (
-            result.correct == expected_correct
-        ), f"Expected {expected_correct} correct, got {result.correct} for {pred_entity} with threshold {threshold}%"
-        assert (
-            result.partial == expected_partial
-        ), f"Expected {expected_partial} partial, got {result.partial} for {pred_entity} with threshold {threshold}%"
-        assert (
-            result.spurious == expected_spurious
-        ), f"Expected {expected_spurious} spurious, got {result.spurious} for {pred_entity} with threshold {threshold}%"
-
-
-def test_strict_evaluation_with_min_overlap():
-    """Test StrictEvaluation strategy with minimum overlap threshold."""
-
-    true_entities = [Entity(label="PER", start=0, end=9)]
-
-    # Test case where pred has insufficient overlap -> should be spurious
-    pred_entities = [Entity(label="PER", start=0, end=2)]  # 30% overlap
-    strategy = StrictEvaluation(min_overlap_percentage=50.0)
-    result, _ = strategy.evaluate(true_entities, pred_entities, ["PER"], 0)
-
-    assert result.correct == 0
-    assert result.incorrect == 0
-    assert result.spurious == 1  # Insufficient overlap -> spurious
-    assert result.missed == 1  # True entity not matched
-
-    # Test case where pred has sufficient overlap but wrong label -> should be incorrect
-    pred_entities = [Entity(label="ORG", start=0, end=6)]  # 70% overlap, wrong label
-    result, _ = strategy.evaluate(true_entities, pred_entities, ["PER", "ORG"], 0)
-
-    assert result.correct == 0
-    assert result.incorrect == 1  # Sufficient overlap but wrong label
-    assert result.spurious == 0
-    assert result.missed == 0
-
-
-def test_entity_type_evaluation_with_min_overlap():
-    """Test EntityTypeEvaluation strategy with minimum overlap threshold."""
-
-    true_entities = [Entity(label="PER", start=0, end=9)]
-
-    # Test case: sufficient overlap with correct label -> correct
-    pred_entities = [Entity(label="PER", start=0, end=6)]  # 70% overlap, correct label
-    strategy = EntityTypeEvaluation(min_overlap_percentage=50.0)
-    result, _ = strategy.evaluate(true_entities, pred_entities, ["PER"], 0)
-
-    assert result.correct == 1
-    assert result.incorrect == 0
-    assert result.spurious == 0
-    assert result.missed == 0
-
-    # Test case: sufficient overlap with wrong label -> incorrect
-    pred_entities = [Entity(label="ORG", start=0, end=6)]  # 70% overlap, wrong label
-    result, _ = strategy.evaluate(true_entities, pred_entities, ["PER", "ORG"], 0)
-
-    assert result.correct == 0
-    assert result.incorrect == 1
-    assert result.spurious == 0
-    assert result.missed == 0
-
-    # Test case: insufficient overlap -> spurious
-    pred_entities = [Entity(label="PER", start=0, end=2)]  # 30% overlap < 50%
-    result, _ = strategy.evaluate(true_entities, pred_entities, ["PER"], 0)
-
-    assert result.correct == 0
-    assert result.incorrect == 0
-    assert result.spurious == 1
-    assert result.missed == 1
-
-
-def test_exact_evaluation_with_min_overlap():
-    """Test ExactEvaluation strategy with minimum overlap threshold."""
-
-    true_entities = [Entity(label="PER", start=0, end=9)]
-
-    # Test case: exact boundaries (different label) -> correct
-    pred_entities = [Entity(label="ORG", start=0, end=9)]  # Exact match, different label
-    strategy = ExactEvaluation(min_overlap_percentage=50.0)
-    result, _ = strategy.evaluate(true_entities, pred_entities, ["PER", "ORG"], 0)
-
-    assert result.correct == 1
-    assert result.incorrect == 0
-    assert result.spurious == 0
-    assert result.missed == 0
-
-    # Test case: sufficient overlap but not exact -> incorrect
-    pred_entities = [Entity(label="ORG", start=0, end=6)]  # 70% overlap, not exact
-    result, _ = strategy.evaluate(true_entities, pred_entities, ["PER", "ORG"], 0)
-
-    assert result.correct == 0
-    assert result.incorrect == 1
-    assert result.spurious == 0
-    assert result.missed == 0
-
-    # Test case: insufficient overlap -> spurious
-    pred_entities = [Entity(label="ORG", start=0, end=2)]  # 30% overlap < 50%
-    result, _ = strategy.evaluate(true_entities, pred_entities, ["PER", "ORG"], 0)
-
-    assert result.correct == 0
-    assert result.incorrect == 0
-    assert result.spurious == 1
-    assert result.missed == 1
-
-
-def test_edge_cases_overlap_calculation():
-    """Test edge cases for overlap calculation."""
-
-    strategy = PartialEvaluation(min_overlap_percentage=100.0)
-
-    # Test single-token entities
-    true_single = Entity(label="ORG", start=5, end=5)  # Single token
-    pred_single = Entity(label="ORG", start=5, end=5)  # Exact match
-
-    overlap = strategy._calculate_overlap_percentage(pred_single, true_single)
-    assert overlap == 100.0, "Single token exact match should be 100%"
-
-    # Test adjacent but non-overlapping entities
-    pred_adjacent = Entity(label="ORG", start=6, end=6)  # Adjacent token
-    overlap = strategy._calculate_overlap_percentage(pred_adjacent, true_single)
-    assert overlap == 0.0, "Adjacent non-overlapping should be 0%"
-
-    # Test overlapping single-token entities
-    pred_overlap = Entity(label="ORG", start=4, end=6)  # Overlaps with true_single at position 5
-    overlap = strategy._calculate_overlap_percentage(pred_overlap, true_single)
-    assert overlap == 100.0, "Single token overlap should be 100% of true entity"
-
-
-def test_multiple_entities_with_min_overlap():
-    """Test evaluation with multiple entities and minimum overlap."""
-
-    true_entities = [Entity(label="PER", start=0, end=4), Entity(label="ORG", start=10, end=14)]  # 5 tokens  # 5 tokens
-
-    pred_entities = [
-        Entity(label="PER", start=0, end=1),  # 40% overlap with first entity
-        Entity(label="ORG", start=10, end=12),  # 60% overlap with second entity
-        Entity(label="LOC", start=20, end=22),  # No overlap (spurious)
-    ]
-
-    # With 50% threshold
-    strategy = PartialEvaluation(min_overlap_percentage=50.0)
-    result, _ = strategy.evaluate(true_entities, pred_entities, ["PER", "ORG", "LOC"], 0)
-
-    assert result.correct == 0
-    assert result.partial == 1  # Only the ORG entity has sufficient overlap (60% > 50%)
-    assert result.spurious == 2  # PER entity (40% < 50%) and LOC entity (no overlap)
-    assert result.missed == 1  # First true entity (PER) not sufficiently matched

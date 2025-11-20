@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import List, Tuple
+from typing import List, Tuple, Set
+import numpy as np
+from scipy.optimize import linear_sum_assignment
 
 from .entities import Entity, EvaluationResult, EvaluationIndices
 
@@ -19,32 +21,76 @@ class EvaluationStrategy(ABC):
         self.min_overlap_percentage = min_overlap_percentage
 
     @staticmethod
-    def _calculate_overlap_percentage(pred: Entity, true: Entity) -> float:
+    def calculate_overlap_percentage(pred: Entity, true: Entity) -> float:
         """
         Calculate the percentage overlap between predicted and true entities.
+        Based on true entity's character coverage.
+
+        Args:
+            pred: Predicted entity
+            true: True entity
 
         Returns:
-            Overlap percentage based on true entity span (0-100)
+            Overlap percentage (0-100)
         """
-        # Check if there's any overlap first
-        if pred.start > true.end or pred.end < true.start:
-            return 0.0
+        return true.calculate_overlap_percentage(pred)
 
-        # Calculate overlap boundaries
-        overlap_start = max(pred.start, true.start)
-        overlap_end = min(pred.end, true.end)
-
-        # Calculate spans (adding 1 because end is inclusive)
-        overlap_span = overlap_end - overlap_start + 1
-        true_span = true.end - true.start + 1
-
-        # Calculate percentage based on true entity span
-        return (overlap_span / true_span) * 100.0
-
-    def _has_sufficient_overlap(self, pred: Entity, true: Entity) -> bool:
+    def has_sufficient_overlap(self, pred: Entity, true: Entity) -> bool:
         """Check if entities have sufficient overlap based on threshold."""
-        overlap_percentage = EvaluationStrategy._calculate_overlap_percentage(pred, true)
+        overlap_percentage = self.calculate_overlap_percentage(pred, true)
         return overlap_percentage >= self.min_overlap_percentage
+
+    def optimal_match(
+        self, 
+        true_entities: List[Entity], 
+        pred_entities: List[Entity]
+    ) -> Tuple[List[Tuple[int, int, float]], Set[int], Set[int]]:
+        """
+        Find optimal matching between true and predicted entities using Hungarian algorithm.
+        
+        Args:
+            true_entities: List of true entities
+            pred_entities: List of predicted entities
+            
+        Returns:
+            Tuple of:
+                - List of matches: [(true_idx, pred_idx, overlap_percentage), ...]
+                - Set of matched true indices
+                - Set of matched pred indices
+        """
+        if not true_entities or not pred_entities:
+            return [], set(), set()
+        
+        n_true = len(true_entities)
+        n_pred = len(pred_entities)
+        
+        # Build cost matrix (we negate overlap for minimization)
+        # High cost (1e9) means no match
+        cost_matrix = np.full((n_true, n_pred), 1e9)
+        
+        for i, true in enumerate(true_entities):
+            for j, pred in enumerate(pred_entities):
+                overlap = self.calculate_overlap_percentage(pred, true)
+                if overlap >= self.min_overlap_percentage:
+                    # Negate overlap for minimization (Hungarian finds minimum cost)
+                    cost_matrix[i, j] = -overlap
+        
+        # Find optimal assignment
+        true_indices, pred_indices = linear_sum_assignment(cost_matrix)
+        
+        # Extract valid matches (where cost is not 1e9)
+        matches = []
+        matched_true = set()
+        matched_pred = set()
+        
+        for t_idx, p_idx in zip(true_indices, pred_indices):
+            if cost_matrix[t_idx, p_idx] < 1e9:
+                overlap = -cost_matrix[t_idx, p_idx]
+                matches.append((t_idx, p_idx, overlap))
+                matched_true.add(t_idx)
+                matched_pred.add(p_idx)
+        
+        return matches, matched_true, matched_pred
 
     @abstractmethod
     def evaluate(
@@ -57,11 +103,11 @@ class StrictEvaluation(EvaluationStrategy):
     """
     Strict evaluation strategy - entities must match exactly.
 
-    If there's a predicted entity that perfectly matches a true entity and they have the same label
-    we mark it as correct.
-    If there's a predicted entity that doesn't perfectly match any true entity, we mark it as spurious.
-    If there's a true entity that doesn't perfecly match any predicted entity, we mark it as missed.
-    All other cases are marked as incorrect.
+    Correct: Same label AND same spans (character-level exact match)
+    Incorrect: Sufficient overlap but not exact match
+    Partial: N/A (not used in strict)
+    Spurious: Predicted entity with no sufficient match
+    Missed: True entity with no sufficient match
     """
 
     def evaluate(
@@ -72,40 +118,36 @@ class StrictEvaluation(EvaluationStrategy):
         """
         result = EvaluationResult()
         indices = EvaluationIndices()
-        matched_true = set()
-
-        for pred_idx, pred in enumerate(pred_entities):
-            found_match = False
-            found_incorrect = False
-
-            for true_idx, true in enumerate(true_entities):
-                if true_idx in matched_true:
-                    continue
-
-                # Check for perfect match (same boundaries and label)
-                if pred.label == true.label and pred.start == true.start and pred.end == true.end:
-                    result.correct += 1
-                    indices.correct_indices.append((instance_index, pred_idx))
-                    matched_true.add(true_idx)
-                    found_match = True
-                    break
-                # Check for sufficient overlap with min threshold
-                if self._has_sufficient_overlap(pred, true):
-                    result.incorrect += 1
-                    indices.incorrect_indices.append((instance_index, pred_idx))
-                    matched_true.add(true_idx)
-                    found_incorrect = True
-                    break
-
-            if not found_match and not found_incorrect:
+        
+        # Get optimal matches
+        matches, matched_true, matched_pred = self.optimal_match(true_entities, pred_entities)
+        
+        # Evaluate each match
+        for t_idx, p_idx, overlap in matches:
+            true_ent = true_entities[t_idx]
+            pred_ent = pred_entities[p_idx]
+            
+            # Check for exact match (same label AND same spans)
+            if pred_ent.label == true_ent.label and pred_ent.spans == true_ent.spans:
+                result.correct += 1
+                indices.correct_indices.append((instance_index, p_idx))
+            else:
+                # Has overlap but not exact
+                result.incorrect += 1
+                indices.incorrect_indices.append((instance_index, p_idx))
+        
+        # Unmatched predictions = spurious
+        for p_idx in range(len(pred_entities)):
+            if p_idx not in matched_pred:
                 result.spurious += 1
-                indices.spurious_indices.append((instance_index, pred_idx))
-
-        for true_idx, true in enumerate(true_entities):
-            if true_idx not in matched_true:
+                indices.spurious_indices.append((instance_index, p_idx))
+        
+        # Unmatched true entities = missed
+        for t_idx in range(len(true_entities)):
+            if t_idx not in matched_true:
                 result.missed += 1
-                indices.missed_indices.append((instance_index, true_idx))
-
+                indices.missed_indices.append((instance_index, t_idx))
+        
         result.compute_metrics()
         return result, indices
 
@@ -114,12 +156,11 @@ class PartialEvaluation(EvaluationStrategy):
     """
     Partial evaluation strategy - allows for partial matches.
 
-    If there's a predicted entity that perfectly matches a true entity, we mark it as correct.
-    If there's a predicted entity that has some minimum overlap with a true entity we mark it as partial.
-    If there's a predicted entity that doesn't match any true entity, we mark it as spurious.
-    If there's a true entity that doesn't match any predicted entity, we mark it as missed.
-
-    There's never entity type/label checking in this strategy, and there's never an entity marked as incorrect.
+    Correct: Exact match (same spans)
+    Partial: Sufficient overlap but not exact
+    Incorrect: N/A (not used in partial - label doesn't matter)
+    Spurious: Predicted entity with no sufficient match
+    Missed: True entity with no sufficient match
     """
 
     def evaluate(
@@ -127,53 +168,49 @@ class PartialEvaluation(EvaluationStrategy):
     ) -> Tuple[EvaluationResult, EvaluationIndices]:
         result = EvaluationResult()
         indices = EvaluationIndices()
-        matched_true = set()
-
-        for pred_idx, pred in enumerate(pred_entities):
-            found_match = False
-
-            for true_idx, true in enumerate(true_entities):
-                if true_idx in matched_true:
-                    continue
-
-                # Check for sufficient overlap with min threshold
-                if self._has_sufficient_overlap(pred, true):
-                    if pred.start == true.start and pred.end == true.end:
-                        result.correct += 1
-                        indices.correct_indices.append((instance_index, pred_idx))
-                    else:
-                        result.partial += 1
-                        indices.partial_indices.append((instance_index, pred_idx))
-                    matched_true.add(true_idx)
-                    found_match = True
-                    break
-
-            if not found_match:
+        
+        # Get optimal matches
+        matches, matched_true, matched_pred = self.optimal_match(true_entities, pred_entities)
+        
+        # Evaluate each match
+        for t_idx, p_idx, overlap in matches:
+            true_ent = true_entities[t_idx]
+            pred_ent = pred_entities[p_idx]
+            
+            # Check for exact span match (label doesn't matter)
+            if pred_ent.spans == true_ent.spans:
+                result.correct += 1
+                indices.correct_indices.append((instance_index, p_idx))
+            else:
+                # Has overlap but not exact spans
+                result.partial += 1
+                indices.partial_indices.append((instance_index, p_idx))
+        
+        # Unmatched predictions = spurious
+        for p_idx in range(len(pred_entities)):
+            if p_idx not in matched_pred:
                 result.spurious += 1
-                indices.spurious_indices.append((instance_index, pred_idx))
-
-        for true_idx, true in enumerate(true_entities):
-            if true_idx not in matched_true:
+                indices.spurious_indices.append((instance_index, p_idx))
+        
+        # Unmatched true entities = missed
+        for t_idx in range(len(true_entities)):
+            if t_idx not in matched_true:
                 result.missed += 1
-                indices.missed_indices.append((instance_index, true_idx))
-
+                indices.missed_indices.append((instance_index, t_idx))
+        
         result.compute_metrics(partial_or_type=True)
         return result, indices
 
 
 class EntityTypeEvaluation(EvaluationStrategy):
     """
-    Entity type evaluation strategy - only checks entity types.
+    Entity type evaluation strategy - checks entity types with overlap.
 
-    In in strategy, we check for overlap between the predicted entity and the true entity.
-
-    If there's a predicted entity that perfectly matches or only some minimum overlap with a
-    true entity, and the same label, we mark it as correct.
-    If there's a predicted entity that has some minimum overlap or perfectly matches but has
-    the wrong label we mark it as inccorrect.
-    If there's a predicted entity that doesn't match any true entity, we mark it as spurious.
-    If there's a true entity that doesn't match any predicted entity, we mark it as missed.
-
+    Correct: Sufficient overlap with same label
+    Incorrect: Sufficient overlap with different label
+    Partial: N/A (not used in entity type)
+    Spurious: Predicted entity with no sufficient match
+    Missed: True entity with no sufficient match
     """
 
     def evaluate(
@@ -181,95 +218,88 @@ class EntityTypeEvaluation(EvaluationStrategy):
     ) -> Tuple[EvaluationResult, EvaluationIndices]:
         result = EvaluationResult()
         indices = EvaluationIndices()
-        matched_true = set()
-
-        for pred_idx, pred in enumerate(pred_entities):
-            found_match = False
-            found_incorrect = False
-
-            for true_idx, true in enumerate(true_entities):
-                if true_idx in matched_true:
-                    continue
-
-                # Check for sufficient overlap with min threshold
-                if self._has_sufficient_overlap(pred, true):
-                    if pred.label == true.label:
-                        result.correct += 1
-                        indices.correct_indices.append((instance_index, pred_idx))
-                        matched_true.add(true_idx)
-                        found_match = True
-                    else:
-                        result.incorrect += 1
-                        indices.incorrect_indices.append((instance_index, pred_idx))
-                        matched_true.add(true_idx)
-                        found_incorrect = True
-                    break
-
-            if not found_match and not found_incorrect:
+        
+        # Get optimal matches
+        matches, matched_true, matched_pred = self.optimal_match(true_entities, pred_entities)
+        
+        # Evaluate each match
+        for t_idx, p_idx, overlap in matches:
+            true_ent = true_entities[t_idx]
+            pred_ent = pred_entities[p_idx]
+            
+            # Check label match
+            if pred_ent.label == true_ent.label:
+                result.correct += 1
+                indices.correct_indices.append((instance_index, p_idx))
+            else:
+                result.incorrect += 1
+                indices.incorrect_indices.append((instance_index, p_idx))
+        
+        # Unmatched predictions = spurious
+        for p_idx in range(len(pred_entities)):
+            if p_idx not in matched_pred:
                 result.spurious += 1
-                indices.spurious_indices.append((instance_index, pred_idx))
-
-        for true_idx, true in enumerate(true_entities):
-            if true_idx not in matched_true:
+                indices.spurious_indices.append((instance_index, p_idx))
+        
+        # Unmatched true entities = missed
+        for t_idx in range(len(true_entities)):
+            if t_idx not in matched_true:
                 result.missed += 1
-                indices.missed_indices.append((instance_index, true_idx))
-
+                indices.missed_indices.append((instance_index, t_idx))
+        
         result.compute_metrics(partial_or_type=True)
         return result, indices
 
 
 class ExactEvaluation(EvaluationStrategy):
     """
-    Exact evaluation strategy - exact boundary match over the surface string, regardless of the type.
+    Exact evaluation strategy - exact span match regardless of type.
 
-    If there's a predicted entity that perfectly matches a true entity, regardless of the label, we mark it as correct.
-    If there's a predicted entity that has only some minimum overlap with a true entity, we mark it as incorrect.
-    If there's a predicted entity that doesn't match any true entity, we mark it as spurious.
-    If there's a true entity that doesn't match any predicted entity, we mark it as missed.
+    Correct: Exact span match (label doesn't matter)
+    Incorrect: Sufficient overlap but not exact spans
+    Partial: N/A (not used in exact)
+    Spurious: Predicted entity with no sufficient match
+    Missed: True entity with no sufficient match
     """
 
     def evaluate(
         self, true_entities: List[Entity], pred_entities: List[Entity], tags: List[str], instance_index: int = 0
     ) -> Tuple[EvaluationResult, EvaluationIndices]:
         """
-        Evaluate the predicted entities against the true entities using exact boundary matching.
+        Evaluate the predicted entities against the true entities using exact span matching.
         Entity type is not considered in the matching.
         """
         result = EvaluationResult()
         indices = EvaluationIndices()
-        matched_true = set()
-
-        for pred_idx, pred in enumerate(pred_entities):
-            found_match = False
-            found_incorrect = False
-
-            for true_idx, true in enumerate(true_entities):
-                if true_idx in matched_true:
-                    continue
-
-                # Check for exact boundary match (regardless of label)
-                if pred.start == true.start and pred.end == true.end:
-                    result.correct += 1
-                    indices.correct_indices.append((instance_index, pred_idx))
-                    matched_true.add(true_idx)
-                    found_match = True
-                    break
-                # Check for sufficient overlap with min threshold
-                if self._has_sufficient_overlap(pred, true):
-                    result.incorrect += 1
-                    indices.incorrect_indices.append((instance_index, pred_idx))
-                    matched_true.add(true_idx)
-                    found_incorrect = True
-                    break
-
-            if not found_match and not found_incorrect:
+        
+        # Get optimal matches
+        matches, matched_true, matched_pred = self.optimal_match(true_entities, pred_entities)
+        
+        # Evaluate each match
+        for t_idx, p_idx, overlap in matches:
+            true_ent = true_entities[t_idx]
+            pred_ent = pred_entities[p_idx]
+            
+            # Check for exact span match (regardless of label)
+            if pred_ent.spans == true_ent.spans:
+                result.correct += 1
+                indices.correct_indices.append((instance_index, p_idx))
+            else:
+                # Has overlap but not exact spans
+                result.incorrect += 1
+                indices.incorrect_indices.append((instance_index, p_idx))
+        
+        # Unmatched predictions = spurious
+        for p_idx in range(len(pred_entities)):
+            if p_idx not in matched_pred:
                 result.spurious += 1
-                indices.spurious_indices.append((instance_index, pred_idx))
-
-        for true_idx, true in enumerate(true_entities):
-            if true_idx not in matched_true:
+                indices.spurious_indices.append((instance_index, p_idx))
+        
+        # Unmatched true entities = missed
+        for t_idx in range(len(true_entities)):
+            if t_idx not in matched_true:
                 result.missed += 1
-                indices.missed_indices.append((instance_index, true_idx))
-
+                indices.missed_indices.append((instance_index, t_idx))
+        
         result.compute_metrics()
         return result, indices
