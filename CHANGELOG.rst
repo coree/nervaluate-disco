@@ -2,6 +2,71 @@ Changelog
 =========
 
 
+nervaluate-disco - Fork for Discontinuous and Overlapping Entities
+-------------------------------------------------------------------
+
+This is a clean-break fork of nervaluate, designed specifically for evaluating
+named entity recognition systems that produce discontinuous entities and/or
+overlapping entities with character-level precision.
+
+Original project: https://github.com/MantisAI/nervaluate
+
+
+2.0.0 (2025-11-20)
+------------------
+
+Breaking Changes
+~~~~~~~~~~~~~~~~
+- Complete rewrite of Entity model**: Entities now use character-based spans 
+  instead of token-based positions
+- New data format: Entities defined as {'spans': [(start, end), ...], 'label': '...'}
+  to support discontinuous entities
+- Removed: All token-based loaders (ConllLoader, ListLoader, DictLoader)
+- Removed: Backward compatibility with IOB/BIO tagging formats
+
+New Features
+~~~~~~~~~~~~
+- Discontinuous entity support: Entities can now have multiple non-contiguous 
+  spans (e.g., spans=[(0, 5), (20, 25)])
+- Overlapping entity support: Multiple entities can cover the same character 
+  positions
+- Optimal matching algorithm**: Uses Hungarian algorithm (scipy.optimize.linear_sum_assignment) 
+  for bipartite matching between predicted and true entities
+- Character-level precision**: All calculations use exact character positions 
+  instead of token indices
+- New loaders:
+  - SpanDictLoader: For format {'text': '...', 'entities': [{'spans': [...], 'label': '...'}]}
+  - SimpleSpanLoader: Simplified format for entity lists
+- Configurable overlap threshold: min_overlap_percentage parameter (1-100) 
+  to control matching sensitivity
+
+Improvements
+~~~~~~~~~~~~
+- Optimal matching prevents suboptimal entity pairings in overlapping scenarios
+- Better handling of nested entities
+- More precise overlap percentage calculations
+- Enhanced validation and error messages
+
+Technical Changes
+~~~~~~~~~~~~~~~~~
+- Entity model completely redesigned with spans: List[Tuple[int, int]]
+- All evaluation strategies updated to use optimal matching
+- Added comprehensive test suite for discontinuous and overlapping entities
+- Dependencies: Added scipy>=1.7.0 for optimization algorithms
+
+Migration from nervaluate 1.x
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+This is a breaking change and not backward compatible. If you need the original
+token-based evaluation, please continue using nervaluate 1.x from:
+https://github.com/MantisAI/nervaluate
+
+Key differences:
+- Use character offsets instead of token positions
+- Format: ``Entity(label='PER', spans=[(0, 5)])`` instead of ``Entity(label='PER', start=0, end=1)``
+- No IOB/BIO tag support (use character spans directly)
+
+================================================================================
+
 (unreleased)
 ------------
 - Testing for single character entities. [David S. Batista]

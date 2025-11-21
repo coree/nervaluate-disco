@@ -1,279 +1,443 @@
-[![python](https://img.shields.io/badge/Python-3.11-3776AB.svg?style=flat&logo=python&logoColor=white)](https://www.python.org)
-&nbsp;
-[![Checked with mypy](http://www.mypy-lang.org/static/mypy_badge.svg)](http://mypy-lang.org/)
-&nbsp;
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
-&nbsp;
-![GitHub](https://img.shields.io/github/license/ivyleavedtoadflax/nervaluate)
-&nbsp;
-![Pull Requests Welcome](https://img.shields.io/badge/pull%20requests-welcome-brightgreen.svg)
-&nbsp;
-![PyPI](https://img.shields.io/pypi/v/nervaluate)
+# nervaluate-disco
 
-# nervaluate
+**Evaluation for Discontinuous and Overlapping NER Entities**
 
-`nervaluate` is a module for evaluating Named Entity Recognition (NER) models as defined in the SemEval 2013 - 9.1 task.
+A clean-break fork of [nervaluate](https://github.com/MantisAI/nervaluate) specifically designed for evaluating Named Entity Recognition (NER) systems that produce **discontinuous entities** and/or **overlapping entities**.
 
-The evaluation metrics output by nervaluate go beyond a simple token/tag based schema, and consider different scenarios 
-based on whether all the tokens that belong to a named entity were classified or not, and also whether the correct 
-entity type was assigned.
+## Key Features
 
-This full problem is described in detail in the [original blog](http://www.davidsbatista.net/blog/2018/05/09/Named_Entity_Evaluation/) 
-post by [David Batista](https://github.com/davidsbatista), and this package extends the code in the [original repository](https://github.com/davidsbatista/NER-Evaluation) 
-which accompanied the blog post.
+- **Discontinuous entities**: Entities with multiple non-contiguous spans
+- **Overlapping entities**: Multiple entities covering the same text
+- **Optimal matching**: Uses Hungarian algorithm for globally optimal entity alignment
+- **Character-based offsets**: Works with character positions (not token-based)
+- **Four evaluation strategies**: Strict, Partial, Entity Type, and Exact
+- **Comprehensive metrics**: Precision, recall, F1 with detailed breakdowns
 
-The code draws heavily on the papers:
+## What Changed from Original nervaluate
 
-* [SemEval-2013 Task 9 : Extraction of Drug-Drug Interactions from Biomedical Texts (DDIExtraction 2013)](https://www.aclweb.org/anthology/S13-2056)
+This is a **clean-break fork** with fundamental changes:
 
-* [SemEval-2013 Task 9.1 - Evaluation Metrics](https://davidsbatista.net/assets/documents/others/semeval_2013-task-9_1-evaluation-metrics.pdf)
+| Feature | Original nervaluate | nervaluate-disco |
+|---------|-------------------|------------------|
+| Entity spans | Single continuous span | Multiple discontinuous spans |
+| Offsets | Token-based | Character-based |
+| Overlapping | Not supported | Fully supported |
+| Matching | Greedy 1-to-1 | Optimal bipartite (Hungarian) |
+| Format | IOB/CoNLL | Custom span format |
 
-# Usage example
+## Installation
 
-```
-pip install nervaluate
+```bash
+pip install git+https://github.com/coree/nervaluate-disco.git
 ```
 
-A possible input format are lists of NER labels, where each list corresponds to a sentence and each label is a token label.
-Initialize the `Evaluator` class with the true labels and predicted labels, and specify the entity types we want to evaluate.
+or
+
+```bash
+git clone https://github.com/coree/nervaluate-disco.git
+cd nervaluate-disco
+pip install -r requirements.txt
+```
+
+## Quick Start
+
+### Basic Usage
 
 ```python
-from nervaluate.evaluator import Evaluator
+from nervaluate import Evaluator
 
+# Your data format
 true = [
-    ['O', 'B-PER', 'I-PER', 'O', 'O', 'O', 'B-ORG', 'I-ORG'],  # "The John Smith who works at Google Inc"
-    ['O', 'B-LOC', 'B-PER', 'I-PER', 'O', 'O', 'B-DATE'],      # "In Paris Marie Curie lived in 1895"
+    {
+        'text': 'John Smith works at Google Inc.',
+        'entities': [
+            {'spans': [(0, 10)], 'label': 'PERSON', 'text': 'John Smith'},
+            {'spans': [(20, 30)], 'label': 'ORG', 'text': 'Google Inc'}
+        ]
+    }
 ]
-  
+
 pred = [
-    ['O', 'O', 'B-PER', 'I-PER', 'O', 'O', 'B-ORG', 'I-ORG'],
-    ['O', 'B-LOC', 'I-LOC', 'B-PER', 'O', 'O', 'B-DATE'],
+    {
+        'text': 'John Smith works at Google Inc.',
+        'entities': [
+            {'spans': [(0, 10)], 'label': 'PERSON'},
+            {'spans': [(20, 30)], 'label': 'ORG'}
+        ]
+    }
 ]
-   
-evaluator = Evaluator(true, pred, tags=['PER', 'ORG', 'LOC', 'DATE'], loader="list")
+
+# Evaluate
+evaluator = Evaluator(true, pred, tags=['PERSON', 'ORG'], loader='span_dict')
+results = evaluator.evaluate()
+
+# Print results
+print(evaluator.summary_report(mode='overall'))
 ```
 
-Print the summary report for the evaluation, which will show the metrics for each entity type and evaluation scenario:
+### Discontinuous Entities
 
 ```python
+true = [
+    {
+        'text': 'The alpha and beta receptor complex',
+        'entities': [
+            {
+                'spans': [(4, 9), (14, 18)],  # "alpha" and "beta"
+                'label': 'PROTEIN',
+                'text': 'alpha beta'
+            }
+        ]
+    }
+]
 
-print(evaluator.summary_report())
+pred = [
+    {
+        'text': 'The alpha and beta receptor complex',
+        'entities': [
+            {'spans': [(4, 9), (14, 18)], 'label': 'PROTEIN'}
+        ]
+    }
+]
 
+evaluator = Evaluator(true, pred, tags=['PROTEIN'], loader='span_dict')
+results = evaluator.evaluate()
+print(f"F1 Score: {results['overall']['strict'].f1:.2f}")
+```
+
+### Overlapping Entities
+
+```python
+true = [
+    {
+        'text': 'protein kinase activity',
+        'entities': [
+            {'spans': [(0, 7)], 'label': 'PROTEIN'},
+            {'spans': [(0, 14)], 'label': 'ENZYME'},  # Overlaps!
+            {'spans': [(8, 23)], 'label': 'FUNCTION'}
+        ]
+    }
+]
+
+pred = [
+    {
+        'text': 'protein kinase activity',
+        'entities': [
+            {'spans': [(0, 7)], 'label': 'PROTEIN'},
+            {'spans': [(0, 14)], 'label': 'ENZYME'},
+            {'spans': [(8, 23)], 'label': 'FUNCTION'}
+        ]
+    }
+]
+
+evaluator = Evaluator(
+    true, pred, 
+    tags=['PROTEIN', 'ENZYME', 'FUNCTION'], 
+    loader='span_dict'
+)
+results = evaluator.evaluate()
+```
+
+## Evaluation Strategies
+
+### 1. Strict Evaluation
+- **Correct**: Same label AND exact same spans
+- **Incorrect**: Sufficient overlap but wrong label OR wrong spans
+- **Example**: Perfect match required
+
+### 2. Partial Evaluation
+- **Correct**: Exact span match (label ignored)
+- **Partial**: Sufficient overlap but boundaries differ
+- **Note**: No "incorrect" category; uses 0.5 credit for partial matches
+
+### 3. Entity Type Evaluation
+- **Correct**: Sufficient overlap AND same label
+- **Incorrect**: Sufficient overlap BUT wrong label
+
+### 4. Exact Evaluation
+- **Correct**: Exact boundary match (label ignored)
+- **Incorrect**: Sufficient overlap but boundaries differ
+
+## Input Format
+
+### Primary Format: `span_dict`
+
+```python
+[
+    {
+        'text': 'Full sentence text',  # Optional but recommended
+        'entities': [
+            {
+                'spans': [(start, end), ...],  # Character offsets (required)
+                'label': 'ENTITY_TYPE',        # Required
+                'text': 'entity text'           # Optional
+            }
+        ]
+    }
+]
+```
+
+**Important**: Character offsets are:
+- Zero-indexed
+- End-exclusive: `text[start:end]`
+- Multiple spans for discontinuous entities
+
+### Alternative Format: `simple_span`
+
+```python
+[
+    [  # Document 1
+        {'spans': [(10, 15)], 'label': 'PERSON'},
+        {'spans': [(20, 25)], 'label': 'ORG'}
+    ],
+    [  # Document 2
+        {'spans': [(0, 5)], 'label': 'LOC'}
+    ]
+]
+```
+
+## Advanced Options
+
+### Overlap Threshold
+
+Control the minimum overlap percentage required for matching:
+
+```python
+evaluator = Evaluator(
+    true, pred,
+    tags=['PERSON', 'ORG'],
+    loader='span_dict',
+    min_overlap_percentage=50.0  # 50% minimum overlap
+)
+```
+
+### Per-Entity Metrics
+
+```python
+results = evaluator.evaluate()
+
+# Overall metrics
+print(results['overall']['strict'].f1)
+
+# Per-entity metrics
+print(results['entities']['PERSON']['strict'].precision)
+print(results['entities']['ORG']['partial'].recall)
+```
+
+### Report Generation
+
+```python
+# Summary report
+print(evaluator.summary_report(mode='overall'))
+print(evaluator.summary_report(mode='entities', scenario='strict'))
+
+# CSV export
+csv_string = evaluator.results_to_csv(mode='overall')
+evaluator.results_to_csv(mode='entities', scenario='strict', file_path='results.csv')
+```
+
+## How It Works
+
+### 1. Entity Representation
+
+```python
+from nervaluate.entities import Entity
+
+# Continuous
+entity1 = Entity(label="PERSON", spans=[(10, 15)])
+
+# Discontinuous
+entity2 = Entity(label="PROTEIN", spans=[(10, 15), (30, 35)])
+
+# Check properties
+print(entity1.is_continuous)  # True
+print(entity2.total_chars)    # 10
+print(entity2.overlaps_with(entity1))  # False
+```
+
+### 2. Overlap Calculation
+
+Character-level overlap percentage based on true entity coverage:
+
+```python
+from nervaluate.matching import calculate_overlap_percentage
+
+true = Entity("PER", spans=[(10, 20)])  # 10 characters
+pred = Entity("PER", spans=[(10, 15)])  # 5 characters overlap
+
+overlap = calculate_overlap_percentage(pred, true)
+print(overlap)  # 50.0
+```
+
+### 3. Optimal Matching
+
+Uses the Hungarian algorithm for globally optimal entity alignment:
+
+```python
+from nervaluate.matching import optimal_match
+
+true_entities = [Entity("PER", spans=[(0, 10)]), Entity("ORG", spans=[(20, 30)])]
+pred_entities = [Entity("PER", spans=[(0, 8)]), Entity("ORG", spans=[(20, 30)])]
+
+matches, matched_true, matched_pred = optimal_match(
+    true_entities, 
+    pred_entities, 
+    threshold=50.0
+)
+
+for t_idx, p_idx, overlap, true_ent, pred_ent in matches:
+    print(f"True[{t_idx}] ↔ Pred[{p_idx}]: {overlap:.1f}% overlap")
+```
+
+## Example Output
+
+```
 Scenario: all
 
               correct   incorrect     partial      missed    spurious   precision      recall    f1-score
 
 ent_type            5           0           0           0           0        1.00        1.00        1.00
-   exact            2           3           0           0           0        0.40        0.40        0.40
- partial            2           0           3           0           0        0.40        0.40        0.40
-  strict            2           3           0           0           0        0.40        0.40        0.40
-```  
+   exact            3           2           0           0           0        0.60        0.60        0.60
+ partial            3           0           2           0           0        0.80        0.80        0.80
+  strict            3           2           0           0           0        0.60        0.60        0.60
+```
 
-or aggregated by entity type under a specific evaluation scenario:
+## Use Cases
+
+### Biomedical NER
 
 ```python
-print(evaluator.summary_report(mode='entities'))  
-  
-Scenario: strict
-
-             correct   incorrect     partial      missed    spurious   precision      recall    f1-score
-
-   DATE            1           0           0           0           0        1.00        1.00        1.00
-    LOC            0           1           0           0           0        0.00        0.00        0.00
-    ORG            1           0           0           0           0        1.00        1.00        1.00
-    PER            0           2           0           0           0        0.00        0.00        0.00
+# Discontinuous protein names
+true = [{
+    'text': 'The alpha-2A and beta-3B adrenergic receptors',
+    'entities': [
+        {'spans': [(4, 12), (17, 24)], 'label': 'PROTEIN'}
+    ]
+}]
 ```
 
-# Evaluation Scenarios
+### Nested Entities
 
-## Token level evaluation for NER is too simplistic
-
-When running machine learning models for NER, it is common to report metrics at the individual token level. This may 
-not be the best approach, as a named entity can be made up of multiple tokens, so a full-entity accuracy would be 
-desirable.
-
-When comparing the golden standard annotations with the output of a NER system different scenarios might occur:
-
-__I. Surface string and entity type match__
-
-| Token | Gold  | Prediction |
-|-------|-------|------------|
-| in    | O     | O          |
-| New   | B-LOC | B-LOC      |
-| York  | I-LOC | I-LOC      |
-| .     | O     | O          |
-
-__II. System hypothesized an incorrect entity__
-
-| Token    | Gold | Prediction |
-|----------|------|------------|
-| an       | O    | O          |
-| Awful    | O    | B-ORG      |
-| Headache | O    | I-ORG      |
-| in       | O    | O          |
-
-__III. System misses an entity__
-
-| Token | Gold  | Prediction |
-|-------|-------|------------|
-| in    | O     | O          |
-| Palo  | B-LOC | O          |
-| Alto  | I-LOC | O          |
-| ,     | O     | O          |
-
-Based on these three scenarios we have a simple classification evaluation that can be measured in terms of false 
-positives, true positives, false negatives and false positives, and subsequently compute precision, recall and 
-F1-score for each named-entity type.
-
-However, this simple schema ignores the possibility of partial matches or other scenarios when the NER system gets
-the named-entity surface string correct but the type wrong. We might also want to evaluate these scenarios 
-again at a full-entity level.
-
-For example:
-
-__IV. System identifies the surface string but assigns the wrong entity type__
-
-| Token | Gold  | Prediction |
-|-------|-------|------------|
-| I     | O     | O          |
-| live  | O     | O          |
-| in    | O     | O          |
-| Palo  | B-LOC | B-ORG      |
-| Alto  | I-LOC | I-ORG      |
-| ,     | O     | O          |
-
-__V. System gets the boundaries of the surface string wrong__
-
-| Token   | Gold  | Prediction |
-|---------|-------|------------|
-| Unless  | O     | B-PER      |
-| Karl    | B-PER | I-PER      |
-| Smith   | I-PER | I-PER      |
-| resigns | O     | O          |
-
-__VI. System gets the boundaries and entity type wrong__
-
-| Token   | Gold  | Prediction |
-|---------|-------|------------|
-| Unless  | O     | B-ORG      |
-| Karl    | B-PER | I-ORG      |
-| Smith   | I-PER | I-ORG      |
-| resigns | O     | O          |
-
-
-## Defining evaluation metrics
-
-How can we incorporate these described scenarios into evaluation metrics? See the [original blog](http://www.davidsbatista.net/blog/2018/05/09/Named_Entity_Evaluation/) 
-for a great explanation, a summary is included here.
-
-We can define the following five metrics to consider different categories of errors:
-
-| Error type      | Explanation                                                              |
-|-----------------|--------------------------------------------------------------------------|
-| Correct (COR)   | both are the same                                                        |
-| Incorrect (INC) | the output of a system and the golden annotation don’t match             |
-| Partial (PAR)   | system and the golden annotation are somewhat “similar” but not the same |
-| Missing (MIS)   | a golden annotation is not captured by a system                          |
-| Spurious (SPU)  | system produces a response which doesn’t exist in the golden annotation  |
-
-These five metrics can be measured in four different ways:
-
-| Evaluation schema | Explanation                                                                       |
-|-------------------|-----------------------------------------------------------------------------------|
-| Strict            | exact boundary surface string match and entity type                               |
-| Exact             | exact boundary match over the surface string, regardless of the type              |
-| Partial           | partial boundary match over the surface string, regardless of the type            |
-| Type              | some overlap between the system tagged entity and the gold annotation is required |
-
-These five errors and four evaluation schema interact in the following ways:
-
-| Scenario | Gold entity | Gold string    | Pred entity | Pred string         | Type | Partial | Exact | Strict |
-|----------|-------------|----------------|-------------|---------------------|------|---------|-------|--------|
-| III      | BRAND       | tikosyn        |             |                     | MIS  | MIS     | MIS   | MIS    |
-| II       |             |                | BRAND       | healthy             | SPU  | SPU     | SPU   | SPU    |
-| V        | DRUG        | warfarin       | DRUG        | of warfarin         | COR  | PAR     | INC   | INC    |
-| IV       | DRUG        | propranolol    | BRAND       | propranolol         | INC  | COR     | COR   | INC    |
-| I        | DRUG        | phenytoin      | DRUG        | phenytoin           | COR  | COR     | COR   | COR    |
-| VI       | GROUP       | contraceptives | DRUG        | oral contraceptives | INC  | PAR     | INC   | INC    |
-
-Then precision, recall and f1-score are calculated for each different evaluation schema. In order to achieve data, 
-two more quantities need to be calculated:
-
-```
-POSSIBLE (POS) = COR + INC + PAR + MIS = TP + FN
-ACTUAL (ACT) = COR + INC + PAR + SPU = TP + FP
+```python
+# Organization contains location
+true = [{
+    'text': 'New York City Department of Health',
+    'entities': [
+        {'spans': [(0, 13)], 'label': 'CITY'},
+        {'spans': [(0, 34)], 'label': 'ORG'}  # Contains CITY
+    ]
+}]
 ```
 
-Then we can compute precision, recall, f1-score, where roughly describing precision is the percentage of correct 
-named-entities found by the NER system. Recall as the percentage of the named-entities in the golden annotations 
-that are retrieved by the NER system. 
+### Co-reference Resolution
 
-This is computed in two different ways depending on whether we want an exact  match (i.e., strict and exact ) or a 
-partial match (i.e., partial and type) scenario:
-
-__Exact Match (i.e., strict and exact )__
-```
-Precision = (COR / ACT) = TP / (TP + FP)
-Recall = (COR / POS) = TP / (TP+FN)
-```
-
-__Partial Match (i.e., partial and type)__
-```
-Precision = (COR + 0.5 × PAR) / ACT = TP / (TP + FP)
-Recall = (COR + 0.5 × PAR)/POS = COR / ACT = TP / (TP + FN)
+```python
+# Same entity mentioned multiple times
+true = [{
+    'text': 'The CEO resigned. The CEO later returned.',
+    'entities': [
+        {'spans': [(4, 7), (22, 25)], 'label': 'PERSON'}
+    ]
+}]
 ```
 
-__Putting all together:__
+## Development
 
-| Measure   | Type | Partial | Exact | Strict |
-|-----------|------|---------|-------|--------|
-| Correct   | 3    | 3       | 3     | 2      |
-| Incorrect | 2    | 0       | 2     | 3      |
-| Partial   | 0    | 2       | 0     | 0      |
-| Missed    | 1    | 1       | 1     | 1      |
-| Spurious  | 1    | 1       | 1     | 1      |
-| Precision | 0.5  | 0.66    | 0.5   | 0.33   |
-| Recall    | 0.5  | 0.66    | 0.5   | 0.33   |
-| F1        | 0.5  | 0.66    | 0.5   | 0.33   |
+### Running Tests
 
+```bash
+# Install dependencies
+pip install -r requirements.txt
 
-## Notes:
+# Run demo tests
+python test_demo.py
 
-In scenarios IV and VI the entity type of the `true` and `pred` does not match, in both cases we only scored against 
-the true entity, not the predicted one. You can argue that the predicted entity could also be scored as spurious, 
-but according to the definition of `spurious`:
+# Run full test suite (requires pytest)
+pytest tests/
+```
 
-* Spurious (SPU) : system produces a response which does not exist in the golden annotation;
+### Project Structure
 
-In this case there exists an annotation, but with a different entity type, so we assume it's only incorrect.
+```
+nervaluate-disco/
+├── src/nervaluate/
+│   ├── __init__.py
+│   ├── entities.py      # Entity model
+│   ├── matching.py      # Optimal matching algorithms
+│   ├── loaders.py       # Data loaders
+│   ├── strategies.py    # Evaluation strategies
+│   └── evaluator.py     # Main evaluator
+├── tests/
+│   ├── test_entities.py
+│   ├── test_matching.py
+│   ├── test_loaders.py
+│   ├── test_strategies.py
+│   └── test_integration.py
+├── test_demo.py         # Standalone demo
+├── requirements.txt
+└── README.md
+```
 
+## API Reference
 
-## Contributing to the `nervaluate` package
+### Evaluator
 
-### Extending the package to accept more formats
+```python
+Evaluator(
+    true: List[Dict],
+    pred: List[Dict],
+    tags: List[str],
+    loader: str = 'span_dict',
+    min_overlap_percentage: float = 1.0
+)
+```
 
-The `Evaluator` accepts the following formats:
+**Methods**:
+- `evaluate()` → Dict: Run evaluation
+- `summary_report(mode='overall', scenario='strict', digits=2)` → str
+- `results_to_csv(mode='overall', scenario='strict', file_path=None)` → str
 
-* Nested lists containing NER labels
-* CoNLL style tab delimited strings
-* [prodi.gy](https://prodi.gy) style lists of spans
+### Entity
 
-Additional formats can easily be added by creating a new loader class in `nervaluate/loaders.py`. The  loader class 
-should inherit from the `DataLoader` base class and implement the `load` method. 
+```python
+Entity(
+    label: str,
+    spans: List[Tuple[int, int]],
+    text: Optional[str] = None
+)
+```
 
-The `load` method should return a list of entity lists, where each entity is represented as a dictionary 
-with `label`, `start`, and `end` keys.
+**Properties**:
+- `is_continuous`: bool
+- `total_chars`: int
+- `get_all_char_positions()`: Set[int]
+- `overlaps_with(other)`: bool
 
-The new loader can then be added to the `_setup_loaders` method in the `Evaluator` class, and can be selected with the
- `loader` argument when instantiating the `Evaluator` class.
+## Important Notes
 
-Here is list of formats we intend to [include](https://github.com/MantisAI/nervaluate/issues/3).
+1. **Character offsets**: All spans use character-based offsets (not tokens)
+2. **End-exclusive**: Spans are `[start, end)` like Python slicing
+3. **Sorted spans**: Spans are automatically sorted by start position
+4. **No overlap within entity**: Spans within same entity cannot overlap
+5. **Optimal matching**: Uses Hungarian algorithm (may be slower than greedy for large datasets)
 
-### General Contributing
+## Contributing
 
-Improvements, adding new features and bug fixes are welcome. If you wish to participate in the development of `nervaluate` 
-please read the guidelines in the [CONTRIBUTING.md](CONTRIBUTING.md) file.
+This is a specialized fork. For the original nervaluate, see: https://github.com/MantisAI/nervaluate
+
+## License
+
+MIT License (same as original nervaluate)
+
+## Acknowledgments
+
+Based on [nervaluate](https://github.com/MantisAI/nervaluate) by David S. Batista and Matthew A. Upson.
+
+## Support
+
+For issues specific to discontinuous/overlapping entities, please open an issue in this repository.
 
 ---
 
-Give a ⭐️ if this project helped you!
+**Version**: 2.0.0  
+**Status**: Ready
